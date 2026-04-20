@@ -14,6 +14,10 @@ export JIRA_EMAIL="you@example.com"
 export JIRA_API_TOKEN="…"
 ```
 
+## Claude Code plugin
+
+A ready-to-install Claude Code plugin lives at [`plugin/`](./plugin). It adds a `jira-agent` skill and a `/jira-agent <action> <params-json>` slash command, wrapping this connector. The plugin is excluded from the npm tarball via `.npmignore`; Claude Code marketplaces point directly at the `plugin/` subdirectory of this repo.
+
 ## License
 
 MIT
