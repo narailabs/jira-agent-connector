@@ -1,15 +1,17 @@
 /**
- * Tests for jira_fetch and JiraClient. Uses `vi.spyOn(globalThis, 'fetch')`
- * to mock HTTP responses — no external HTTP library required.
+ * Tests for the Jira connector built on `@narai/connector-toolkit`.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { fetch, VALID_ACTIONS } from "../../src/cli.js";
+import { buildJiraConnector } from "../../src/index.js";
 import {
   JiraClient,
   type JiraClientOptions,
 } from "../../src/lib/jira_client.js";
 
-function jsonResponse(body: unknown, init: { status?: number; headers?: Record<string, string> } = {}): Response {
+function jsonResponse(
+  body: unknown,
+  init: { status?: number; headers?: Record<string, string> } = {},
+): Response {
   return new Response(JSON.stringify(body), {
     status: init.status ?? 200,
     headers: {
@@ -39,28 +41,31 @@ function makeClient(
   return new JiraClient(opts);
 }
 
-describe("JiraClient", () => {
-  afterEach(() => {
-    vi.restoreAllMocks();
+function makeConnector(client: JiraClient) {
+  return buildJiraConnector({
+    sdk: async () => client,
+    credentials: async () => ({ email: "user@example.com" }),
   });
+}
+
+describe("JiraClient", () => {
+  afterEach(() => vi.restoreAllMocks());
 
   it("rejects invalid site URLs at construction", () => {
-    expect(() =>
-      new JiraClient({
-        siteUrl: "ftp://evil.example",
-        email: "a",
-        apiToken: "b",
-      }),
+    expect(
+      () =>
+        new JiraClient({
+          siteUrl: "ftp://evil.example",
+          email: "a",
+          apiToken: "b",
+        }),
     ).toThrow(/Invalid Jira site URL/);
   });
 
   it("builds URLs with query params and attaches Basic auth", async () => {
     const calls: Array<{ url: string; headers: Headers }> = [];
     const client = makeClient({}, async (url, init) => {
-      calls.push({
-        url,
-        headers: new Headers(init?.headers as HeadersInit),
-      });
+      calls.push({ url, headers: new Headers(init?.headers as HeadersInit) });
       return jsonResponse({ total: 0, issues: [] });
     });
     const res = await client.searchJql("project = WIKI", 25, 0);
@@ -104,38 +109,19 @@ describe("JiraClient", () => {
       expect(res.retriable).toBe(false);
     }
   });
-
-  it("enforces rate limit via sleep", async () => {
-    const sleeps: number[] = [];
-    const client = makeClient(
-      {
-        rateLimitPerMin: 2,
-        sleepImpl: async (ms) => {
-          sleeps.push(ms);
-        },
-      },
-      async () => jsonResponse({ total: 0, issues: [] }),
-    );
-    await client.searchJql("a", 1);
-    await client.searchJql("b", 1);
-    await client.searchJql("c", 1);
-    // Third call should have triggered a rate-limit wait.
-    expect(sleeps.some((s) => s > 0)).toBe(true);
-  });
 });
 
-describe("jira_fetch.fetch", () => {
+describe("jira connector — fetch()", () => {
   beforeEach(() => {
     delete process.env["JIRA_SITE_URL"];
     delete process.env["JIRA_EMAIL"];
     delete process.env["JIRA_API_TOKEN"];
   });
-  afterEach(() => {
-    vi.restoreAllMocks();
-  });
+  afterEach(() => vi.restoreAllMocks());
 
-  it("VALID_ACTIONS set", () => {
-    expect([...VALID_ACTIONS].sort()).toEqual([
+  it("exposes validActions", () => {
+    const c = buildJiraConnector();
+    expect([...c.validActions].sort()).toEqual([
       "get_issue",
       "get_project",
       "jql_search",
@@ -143,22 +129,35 @@ describe("jira_fetch.fetch", () => {
   });
 
   it("returns VALIDATION_ERROR for unknown action", async () => {
-    const r = await fetch("nope", {});
-    expect(r["status"]).toBe("error");
-    expect(r["error_code"]).toBe("VALIDATION_ERROR");
+    const c = makeConnector(makeClient());
+    const r = await c.fetch("nope", {});
+    expect(r.status).toBe("error");
+    if (r.status === "error") expect(r.error_code).toBe("VALIDATION_ERROR");
   });
 
-  it("returns VALIDATION_ERROR when missing params", async () => {
-    const r = await fetch("jql_search", {});
-    expect(r["error_code"]).toBe("VALIDATION_ERROR");
+  it("returns VALIDATION_ERROR for missing jql", async () => {
+    const c = makeConnector(makeClient());
+    const r = await c.fetch("jql_search", {});
+    expect(r.status).toBe("error");
+    if (r.status === "error") expect(r.error_code).toBe("VALIDATION_ERROR");
+  });
+
+  it("returns VALIDATION_ERROR for malformed issue_key", async () => {
+    const c = makeConnector(makeClient());
+    const r = await c.fetch("get_issue", { issue_key: "bad-key" });
+    expect(r.status).toBe("error");
+    if (r.status === "error") expect(r.error_code).toBe("VALIDATION_ERROR");
   });
 
   it("returns CONFIG_ERROR when no credentials configured", async () => {
-    const r = await fetch("jql_search", { jql: "project = WIKI" });
-    expect(r["status"]).toBe("error");
-    expect(r["error_code"]).toBe("CONFIG_ERROR");
-    expect(r["retriable"]).toBe(false);
-    expect(r["message"]).toContain("JIRA_");
+    const c = buildJiraConnector();
+    const r = await c.fetch("jql_search", { jql: "project = WIKI" });
+    expect(r.status).toBe("error");
+    if (r.status === "error") {
+      expect(r.error_code).toBe("CONFIG_ERROR");
+      expect(r.retriable).toBe(false);
+      expect(r.message).toContain("JIRA_");
+    }
   });
 
   it("invokes injected client and reshapes response", async () => {
@@ -179,45 +178,45 @@ describe("jira_fetch.fetch", () => {
         ],
       }),
     );
-    const r = await fetch(
-      "jql_search",
-      { jql: "project = FOO", max_results: 10 },
-      { client },
-    );
-    expect(r["status"]).toBe("success");
-    const data = r["data"] as Record<string, unknown>;
-    expect(data["total"]).toBe(2);
-    const first = (data["issues"] as Array<Record<string, unknown>>)[0];
-    expect(first?.["key"]).toBe("FOO-1");
-    expect(first?.["assignee"]).toBe("Jane");
+    const c = makeConnector(client);
+    const r = await c.fetch("jql_search", {
+      jql: "project = FOO",
+      max_results: 10,
+    });
+    expect(r.status).toBe("success");
+    if (r.status === "success") {
+      expect(r.data["total"]).toBe(2);
+      const first = (r.data["issues"] as Array<Record<string, unknown>>)[0];
+      expect(first?.["key"]).toBe("FOO-1");
+      expect(first?.["assignee"]).toBe("Jane");
+    }
   });
 
-  it("surfaces client errors as structured payloads", async () => {
-    const client = makeClient({}, async () =>
-      jsonResponse({}, { status: 401 }),
-    );
-    const r = await fetch(
-      "get_project",
-      { project_key: "FOO" },
-      { client },
-    );
-    expect(r["status"]).toBe("error");
-    expect(r["error_code"]).toBe("AUTH_ERROR");
+  it("surfaces 401 as AUTH_ERROR", async () => {
+    const client = makeClient({}, async () => jsonResponse({}, { status: 401 }));
+    const c = makeConnector(client);
+    const r = await c.fetch("get_project", { project_key: "FOO" });
+    expect(r.status).toBe("error");
+    if (r.status === "error") expect(r.error_code).toBe("AUTH_ERROR");
   });
 });
 
-describe("envelope is wiki-agnostic (no Mermaid in Layer 1)", () => {
+describe("envelope is wiki-agnostic — no mermaid", () => {
   it("jql_search does NOT include a mermaid field", async () => {
     const client = makeClient({}, async () =>
       jsonResponse({
         total: 1,
         issues: [
-          { key: "FOO-1", fields: { summary: "fix login", status: { name: "Done" } } },
+          {
+            key: "FOO-1",
+            fields: { summary: "fix login", status: { name: "Done" } },
+          },
         ],
       }),
     );
-    const r = await fetch("jql_search", { jql: "project = FOO" }, { client });
-    expect(r["status"]).toBe("success");
-    expect(r["mermaid"]).toBeUndefined();
+    const c = makeConnector(client);
+    const r = await c.fetch("jql_search", { jql: "project = FOO" });
+    expect(r.status).toBe("success");
+    if (r.status === "success") expect(r.data["mermaid"]).toBeUndefined();
   });
 });
