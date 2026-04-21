@@ -217,10 +217,135 @@ describe("jira connector — fetch()", () => {
   it("exposes validActions", () => {
     const c = buildJiraConnector();
     expect([...c.validActions].sort()).toEqual([
+      "get_attachment",
+      "get_comments",
       "get_issue",
       "get_project",
       "jql_search",
+      "list_attachments",
     ]);
+  });
+
+  it("list_attachments returns normalized attachments", async () => {
+    const client = makeClient({}, async (url) => {
+      expect(url).toMatch(/\/rest\/api\/3\/issue\/DEV-42/);
+      expect(url).toMatch(/fields=attachment/);
+      return jsonResponse({
+        key: "DEV-42",
+        fields: {
+          attachment: [
+            {
+              id: "10001",
+              filename: "doc.pdf",
+              mimeType: "application/pdf",
+              size: 999,
+              created: "2026-04-01T00:00:00Z",
+              author: { displayName: "Alice" },
+              content:
+                "https://example.atlassian.net/rest/api/3/attachment/content/10001",
+            },
+          ],
+        },
+      });
+    });
+    const c = makeConnector(client);
+    const r = await c.fetch("list_attachments", { issue_key: "DEV-42" });
+    expect(r.status).toBe("success");
+    if (r.status === "success") {
+      const atts = r.data["attachments"] as Array<Record<string, unknown>>;
+      expect(atts).toHaveLength(1);
+      expect(atts[0]?.["attachment_id"]).toBe("10001");
+      expect(atts[0]?.["filename"]).toBe("doc.pdf");
+    }
+  });
+
+  it("get_attachment fetches + extracts text file", async () => {
+    const body = new TextEncoder().encode("hello");
+    const client = makeClient({}, async (url) => {
+      if (url.includes("/attachment/content/10001")) {
+        return new Response(body, {
+          status: 200,
+          headers: {
+            "content-type": "text/plain",
+            "content-disposition": 'attachment; filename="note.txt"',
+          },
+        });
+      }
+      return jsonResponse({
+        key: "DEV-42",
+        fields: {
+          attachment: [
+            {
+              id: "10001",
+              filename: "note.txt",
+              mimeType: "text/plain",
+              size: body.byteLength,
+              content:
+                "https://example.atlassian.net/rest/api/3/attachment/content/10001",
+            },
+          ],
+        },
+      });
+    });
+    const c = makeConnector(client);
+    const r = await c.fetch("get_attachment", {
+      issue_key: "DEV-42",
+      attachment_id: "10001",
+    });
+    expect(r.status).toBe("success");
+    if (r.status === "success") {
+      expect(r.data["attachment_id"]).toBe("10001");
+      expect(r.data["filename"]).toBe("note.txt");
+      const extracted = r.data["extracted"] as Record<string, unknown>;
+      expect(extracted["format"]).toBe("text");
+      expect(extracted["text"]).toBe("hello");
+    }
+  });
+
+  it("get_attachment returns NOT_FOUND for unknown id", async () => {
+    const client = makeClient({}, async () =>
+      jsonResponse({ key: "DEV-42", fields: { attachment: [] } }),
+    );
+    const c = makeConnector(client);
+    const r = await c.fetch("get_attachment", {
+      issue_key: "DEV-42",
+      attachment_id: "nope",
+    });
+    expect(r.status).toBe("error");
+    if (r.status === "error") expect(r.error_code).toBe("NOT_FOUND");
+  });
+
+  it("get_comments returns ADF-converted plain text", async () => {
+    const client = makeClient({}, async () =>
+      jsonResponse({
+        total: 1,
+        comments: [
+          {
+            id: "c1",
+            author: { displayName: "Bob" },
+            created: "2026-04-01T00:00:00Z",
+            body: {
+              type: "doc",
+              content: [
+                {
+                  type: "paragraph",
+                  content: [{ type: "text", text: "hello" }],
+                },
+              ],
+            },
+          },
+        ],
+      }),
+    );
+    const c = makeConnector(client);
+    const r = await c.fetch("get_comments", { issue_key: "DEV-42" });
+    expect(r.status).toBe("success");
+    if (r.status === "success") {
+      const comments = r.data["comments"] as Array<Record<string, unknown>>;
+      expect(comments).toHaveLength(1);
+      expect(comments[0]?.["body_plain"]).toBe("hello");
+      expect(comments[0]?.["author"]).toBe("Bob");
+    }
   });
 
   it("returns VALIDATION_ERROR for unknown action", async () => {

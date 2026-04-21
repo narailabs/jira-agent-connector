@@ -5,7 +5,18 @@
  * `Connector` instance; `buildJiraConnector(overrides?)` is exposed for
  * tests that want to inject a fake Jira client.
  */
-import { createConnector, type Connector, type ErrorCode } from "@narai/connector-toolkit";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
+import { createHash, randomUUID } from "node:crypto";
+import {
+  createConnector,
+  extractBinary,
+  FORMAT_MAP,
+  sanitizeLabel,
+  type Connector,
+  type ErrorCode,
+} from "@narai/connector-toolkit";
 import { z } from "zod";
 import {
   JiraClient,
@@ -47,6 +58,28 @@ const getProjectParams = z.object({
       /^[A-Z][A-Z0-9]+$/,
       "Invalid project_key — expected format like PROJ",
     ),
+});
+
+const issueKeyRe = /^[A-Z][A-Z0-9]+-\d+$/;
+
+const listAttachmentsParams = z.object({
+  issue_key: z
+    .string()
+    .regex(issueKeyRe, "Invalid issue_key — expected format like PROJ-123"),
+});
+
+const getAttachmentParams = z.object({
+  issue_key: z
+    .string()
+    .regex(issueKeyRe, "Invalid issue_key — expected format like PROJ-123"),
+  attachment_id: z.string().min(1, "attachment_id is required"),
+});
+
+const getCommentsParams = z.object({
+  issue_key: z
+    .string()
+    .regex(issueKeyRe, "Invalid issue_key — expected format like PROJ-123"),
+  max_results: z.coerce.number().int().positive().default(50),
 });
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -172,6 +205,121 @@ export function buildJiraConnector(overrides: BuildOptions = {}): Connector {
             description: result.data.description ?? "",
             lead: result.data.lead?.displayName ?? null,
             issue_types: (result.data.issueTypes ?? []).map((t) => t.name ?? ""),
+          };
+        },
+      },
+      list_attachments: {
+        description: "List attachments on a Jira issue",
+        params: listAttachmentsParams,
+        classify: { kind: "read" },
+        handler: async (p: z.infer<typeof listAttachmentsParams>, ctx) => {
+          const result = await ctx.sdk.listAttachments(p.issue_key);
+          throwIfError(result);
+          return {
+            issue_key: result.data.issueKey,
+            total: result.data.results.length,
+            attachments: result.data.results.map((a) => ({
+              attachment_id: a.id,
+              filename: a.filename,
+              media_type: a.mediaType,
+              size_bytes: a.sizeBytes,
+              created: a.created,
+              author: a.author,
+            })),
+          };
+        },
+      },
+      get_attachment: {
+        description: "Download and extract a Jira attachment to text",
+        params: getAttachmentParams,
+        classify: { kind: "read" },
+        handler: async (p: z.infer<typeof getAttachmentParams>, ctx) => {
+          const list = await ctx.sdk.listAttachments(p.issue_key);
+          throwIfError(list);
+          const match = list.data.results.find((a) => a.id === p.attachment_id);
+          if (!match) {
+            throw new JiraError(
+              "NOT_FOUND",
+              `Attachment ${p.attachment_id} not found on issue ${p.issue_key}`,
+              false,
+              404,
+            );
+          }
+          const dl = await ctx.sdk.getAttachmentDownload(p.attachment_id);
+          throwIfError(dl);
+          const { bytes, contentType } = dl.data;
+          const filename = dl.data.filename || match.filename;
+          const ext = path.extname(filename).toLowerCase();
+          const fmt = FORMAT_MAP[ext];
+          let extracted: {
+            format: "pdf" | "docx" | "pptx" | "text" | "skipped";
+            text: string | null;
+            warning?: string;
+          };
+          if (contentType.startsWith("text/")) {
+            extracted = {
+              format: "text",
+              text: new TextDecoder("utf-8").decode(bytes),
+            };
+          } else if (fmt) {
+            const tmp = path.join(
+              os.tmpdir(),
+              `jira-attach-${randomUUID()}${ext}`,
+            );
+            try {
+              fs.writeFileSync(tmp, bytes);
+              const r = await extractBinary(tmp, fmt);
+              extracted = { format: r.format, text: r.text };
+            } catch (e) {
+              extracted = {
+                format: "skipped",
+                text: null,
+                warning: e instanceof Error ? e.message : String(e),
+              };
+            } finally {
+              try {
+                fs.unlinkSync(tmp);
+              } catch {
+                /* best-effort */
+              }
+            }
+          } else {
+            extracted = {
+              format: "skipped",
+              text: null,
+              warning: `Unsupported media type '${contentType}'`,
+            };
+          }
+          const checksum = createHash("sha256").update(bytes).digest("hex");
+          return {
+            attachment_id: match.id,
+            issue_key: p.issue_key,
+            filename: sanitizeLabel(filename, 255),
+            media_type: contentType,
+            size_bytes: bytes.byteLength,
+            checksum,
+            extracted,
+            source_url: match.contentUrl,
+          };
+        },
+      },
+      get_comments: {
+        description: "List comments on a Jira issue (plain-text from ADF)",
+        params: getCommentsParams,
+        classify: { kind: "read" },
+        handler: async (p: z.infer<typeof getCommentsParams>, ctx) => {
+          const result = await ctx.sdk.getComments(p.issue_key, p.max_results);
+          throwIfError(result);
+          return {
+            issue_key: result.data.issueKey,
+            total: result.data.total,
+            comments: result.data.results.map((c) => ({
+              comment_id: c.id,
+              author: c.author,
+              created: c.created,
+              updated: c.updated,
+              body_plain: c.body_plain,
+            })),
           };
         },
       },
