@@ -11,6 +11,7 @@
  */
 import { validateUrl } from "@narai/connector-toolkit";
 import { resolveSecret } from "@narai/credential-providers";
+import { adfToPlainText, type AdfNode } from "./adf.js";
 
 type HttpMethod = "GET";
 const ALLOWED_METHODS: ReadonlySet<HttpMethod> = new Set<HttpMethod>(["GET"]);
@@ -279,6 +280,133 @@ export class JiraClient {
       `/rest/api/3/project/${projectKey}`,
     );
   }
+
+  /**
+   * List attachments on an issue. Uses `fields=attachment` on the issue
+   * endpoint because `fields.attachment` is the canonical list; there is
+   * no dedicated `/attachments` collection per issue.
+   */
+  public async listAttachments(
+    issueKey: string,
+  ): Promise<JiraResult<JiraAttachmentList>> {
+    const raw = await this.request<JiraIssueWithAttachments>(
+      "GET",
+      `/rest/api/3/issue/${issueKey}`,
+      { query: { fields: "attachment" } },
+    );
+    if (!raw.ok) return raw;
+    const atts = raw.data.fields?.attachment ?? [];
+    const results: JiraAttachment[] = atts.map((a) => ({
+      id: a.id,
+      filename: a.filename ?? "",
+      mediaType: a.mimeType ?? "application/octet-stream",
+      sizeBytes: a.size ?? 0,
+      created: a.created ?? "",
+      author: a.author?.displayName ?? "",
+      contentUrl: a.content ?? "",
+    }));
+    return {
+      ok: true,
+      status: raw.status,
+      data: { issueKey: raw.data.key ?? issueKey, results },
+    };
+  }
+
+  /** Fetch raw attachment bytes. `GET /rest/api/3/attachment/content/{id}`. */
+  public async getAttachmentDownload(
+    attachmentId: string,
+  ): Promise<
+    JiraResult<{
+      bytes: Uint8Array;
+      contentType: string;
+      filename: string;
+    }>
+  > {
+    const url = this.buildUrl(`/rest/api/3/attachment/content/${attachmentId}`);
+    if (!validateUrl(url)) {
+      return {
+        ok: false,
+        code: "INVALID_URL",
+        message: `URL rejected: ${url}`,
+        retriable: false,
+      };
+    }
+    await this._throttle();
+    const ctrl = new AbortController();
+    const timer = setTimeout(
+      () => ctrl.abort(),
+      this._connectTimeoutMs + this._readTimeoutMs,
+    );
+    try {
+      const response = await this._fetch(url, {
+        method: "GET",
+        headers: {
+          Authorization: this._authHeader,
+          Accept: "*/*",
+        },
+        signal: ctrl.signal,
+      });
+      const status = response.status;
+      if (!response.ok) {
+        return {
+          ok: false,
+          code: classifyHttpStatus(status),
+          message: `Jira HTTP ${status} while downloading attachment ${attachmentId}`,
+          retriable: status === 429 || status >= 500,
+          status,
+        };
+      }
+      const buf = await response.arrayBuffer();
+      const bytes = new Uint8Array(buf);
+      const contentType =
+        response.headers.get("content-type") ?? "application/octet-stream";
+      const filename =
+        parseContentDispositionFilename(
+          response.headers.get("content-disposition"),
+        ) ?? attachmentId;
+      return { ok: true, data: { bytes, contentType, filename }, status };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      const aborted = err instanceof DOMException || /abort/i.test(message);
+      return {
+        ok: false,
+        code: aborted ? "TIMEOUT" : "NETWORK_ERROR",
+        message: aborted ? "Request timed out" : message,
+        retriable: true,
+      };
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  public async getComments(
+    issueKey: string,
+    maxResults = 50,
+  ): Promise<JiraResult<JiraCommentList>> {
+    const raw = await this.request<JiraRawCommentResponse>(
+      "GET",
+      `/rest/api/3/issue/${issueKey}/comment`,
+      { query: { orderBy: "created", maxResults } },
+    );
+    if (!raw.ok) return raw;
+    const comments = raw.data.comments ?? [];
+    const results: JiraComment[] = comments.map((c) => ({
+      id: c.id,
+      author: c.author?.displayName ?? "",
+      created: c.created ?? "",
+      updated: c.updated ?? c.created ?? "",
+      body_plain: adfToPlainText(c.body),
+    }));
+    return {
+      ok: true,
+      status: raw.status,
+      data: { issueKey, results, total: raw.data.total ?? results.length },
+    };
+  }
+
+  public get siteUrl(): string {
+    return this._site;
+  }
 }
 
 // ── Response types (partial; only fields we surface) ──────────────────
@@ -309,6 +437,63 @@ export interface JiraProject {
   issueTypes?: Array<{ name?: string }>;
 }
 
+export interface JiraAttachment {
+  id: string;
+  filename: string;
+  mediaType: string;
+  sizeBytes: number;
+  created: string;
+  author: string;
+  contentUrl: string;
+}
+
+export interface JiraAttachmentList {
+  issueKey: string;
+  results: JiraAttachment[];
+}
+
+interface JiraRawAttachment {
+  id: string;
+  filename?: string;
+  mimeType?: string;
+  size?: number;
+  created?: string;
+  author?: { displayName?: string };
+  content?: string;
+}
+
+interface JiraIssueWithAttachments {
+  key?: string;
+  fields?: { attachment?: JiraRawAttachment[] };
+}
+
+export interface JiraComment {
+  id: string;
+  author: string;
+  created: string;
+  updated: string;
+  body_plain: string;
+}
+
+export interface JiraCommentList {
+  issueKey: string;
+  results: JiraComment[];
+  total: number;
+}
+
+interface JiraRawComment {
+  id: string;
+  author?: { displayName?: string };
+  created?: string;
+  updated?: string;
+  body?: AdfNode;
+}
+
+interface JiraRawCommentResponse {
+  comments?: JiraRawComment[];
+  total?: number;
+}
+
 function parseRetryAfter(value: string | null): number | null {
   if (!value) return null;
   const seconds = Number(value);
@@ -325,4 +510,10 @@ function classifyHttpStatus(status: number): string {
 
 function truncate(s: string, n: number): string {
   return s.length > n ? s.slice(0, n) + "…" : s;
+}
+
+function parseContentDispositionFilename(header: string | null): string | null {
+  if (!header) return null;
+  const match = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(header);
+  return match && match[1] ? match[1].trim() : null;
 }

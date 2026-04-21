@@ -48,6 +48,101 @@ function makeConnector(client: JiraClient) {
   });
 }
 
+describe("JiraClient — attachments + comments", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("listAttachments reads fields.attachment via the issue endpoint", async () => {
+    let calledUrl = "";
+    const client = makeClient({}, async (url) => {
+      calledUrl = url;
+      return jsonResponse({
+        key: "DEV-42",
+        fields: {
+          attachment: [
+            {
+              id: "10001",
+              filename: "report.pdf",
+              mimeType: "application/pdf",
+              size: 1234,
+              created: "2026-04-01T00:00:00Z",
+              author: { displayName: "Alice" },
+              content:
+                "https://example.atlassian.net/rest/api/3/attachment/content/10001",
+            },
+          ],
+        },
+      });
+    });
+    const r = await client.listAttachments("DEV-42");
+    expect(calledUrl).toMatch(/\/rest\/api\/3\/issue\/DEV-42/);
+    expect(calledUrl).toMatch(/fields=attachment/);
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.data.results).toHaveLength(1);
+      expect(r.data.results[0]?.id).toBe("10001");
+      expect(r.data.results[0]?.filename).toBe("report.pdf");
+      expect(r.data.results[0]?.mediaType).toBe("application/pdf");
+    }
+  });
+
+  it("getAttachmentDownload fetches raw bytes", async () => {
+    const payload = new Uint8Array([1, 2, 3]);
+    const client = makeClient({}, async () =>
+      new Response(payload, {
+        status: 200,
+        headers: {
+          "content-type": "application/pdf",
+          "content-disposition": 'attachment; filename="x.pdf"',
+        },
+      }),
+    );
+    const r = await client.getAttachmentDownload("10001");
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(Array.from(r.data.bytes)).toEqual([1, 2, 3]);
+      expect(r.data.contentType).toBe("application/pdf");
+      expect(r.data.filename).toBe("x.pdf");
+    }
+  });
+
+  it("getComments converts ADF body to plain text", async () => {
+    let calledUrl = "";
+    const client = makeClient({}, async (url) => {
+      calledUrl = url;
+      return jsonResponse({
+        comments: [
+          {
+            id: "c1",
+            author: { displayName: "Bob" },
+            created: "2026-04-01T00:00:00Z",
+            updated: "2026-04-01T00:00:00Z",
+            body: {
+              type: "doc",
+              content: [
+                {
+                  type: "paragraph",
+                  content: [{ type: "text", text: "Hello world" }],
+                },
+              ],
+            },
+          },
+        ],
+        total: 1,
+      });
+    });
+    const r = await client.getComments("DEV-42");
+    expect(calledUrl).toMatch(/\/rest\/api\/3\/issue\/DEV-42\/comment/);
+    expect(calledUrl).toMatch(/orderBy=created/);
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.data.results).toHaveLength(1);
+      expect(r.data.results[0]?.id).toBe("c1");
+      expect(r.data.results[0]?.author).toBe("Bob");
+      expect(r.data.results[0]?.body_plain).toBe("Hello world");
+    }
+  });
+});
+
 describe("JiraClient", () => {
   afterEach(() => vi.restoreAllMocks());
 
