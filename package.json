@@ -1,16 +1,23 @@
 {
   "name": "@narai/jira-agent-connector",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "description": "Read-only Jira connector: JQL search, issue details, project metadata. Built on @narai/connector-toolkit with an approval gate and hardship logging. JSON-envelope CLI + library API.",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
-    ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" },
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
     "./cli": "./dist/cli.js"
   },
-  "bin": { "jira-agent-connector": "./dist/cli.js" },
-  "publishConfig": { "access": "public" },
+  "bin": {
+    "jira-agent-connector": "./dist/cli.js"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/narailabs/jira-agent-connector.git"
@@ -19,8 +26,14 @@
     "url": "https://github.com/narailabs/jira-agent-connector/issues"
   },
   "homepage": "https://github.com/narailabs/jira-agent-connector#readme",
-  "engines": { "node": ">=20.0.0" },
-  "files": ["dist/", "README.md", "LICENSE"],
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "files": [
+    "dist/",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "build": "tsc",
     "typecheck": "tsc --noEmit",
@@ -37,5 +50,10 @@
     "vitest": "^3.0.0"
   },
   "license": "MIT",
-  "keywords": ["jira", "connector", "claude", "agent"]
+  "keywords": [
+    "jira",
+    "connector",
+    "claude",
+    "agent"
+  ]
 }
