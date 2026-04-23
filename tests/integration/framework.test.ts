@@ -116,11 +116,15 @@ describe("hardship logging integration", () => {
     });
     await c.fetch("jql_search", { jql: "x" });
 
+    // Toolkit 3.0 uses tiered layout; scope = ctx.sdk.siteUrl hashed to 16-char hex.
+    // sha16("https://example.atlassian.net") === "b6a8e8d4e9d9a4ea"
     const logPath = path.join(
       tmpHome,
       ".claude",
       "connectors",
       "jira",
+      "tenants",
+      "b6a8e8d4e9d9a4ea",
       "hardships.jsonl",
     );
     expect(fs.existsSync(logPath)).toBe(true);
@@ -137,11 +141,15 @@ describe("hardship logging integration", () => {
       credentials: async () => ({}),
     });
     await c.fetch("get_issue", { issue_key: "FOO-1" });
+    // Toolkit 3.0 uses tiered layout; scope = ctx.sdk.siteUrl hashed to 16-char hex.
+    // sha16("https://example.atlassian.net") === "b6a8e8d4e9d9a4ea"
     const projectLog = path.join(
       tmpCwd,
       ".claude",
       "connectors",
       "jira",
+      "tenants",
+      "b6a8e8d4e9d9a4ea",
       "hardships.jsonl",
     );
     expect(fs.existsSync(projectLog)).toBe(true);

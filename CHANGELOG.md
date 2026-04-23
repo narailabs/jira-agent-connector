@@ -1,5 +1,15 @@
 # Changelog
 
+## 3.0.0 — 2026-04-22
+
+### BREAKING
+
+- Requires `@narai/connector-toolkit@^3.0.0-rc.1`. See toolkit 3.0 changelog for `Decision`, `ExtendedEnvelope`, and `HardshipEntry` breaking changes (most do not affect this connector; documented for downstream awareness).
+
+### Added
+
+- `scope(ctx)` callback opts this connector into toolkit 3.0's tenant-scoped self-improvement loop. Keys patterns.yaml/hardships.jsonl storage by `siteUrl` (e.g. `https://acme.atlassian.net`). (See toolkit design doc at `connector-toolkit/docs/plans/2026-04-22-self-improvement-loop-design.md`.)
+
 ## 2.1.0 — 2026-04-21
 
 ### Added

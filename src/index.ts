@@ -144,7 +144,8 @@ export function buildJiraConnector(overrides: BuildOptions = {}): Connector {
 
   return createConnector<JiraClient>({
     name: "jira",
-    version: "2.0.0",
+    version: "3.0.0",
+    scope: (ctx) => ctx.sdk.siteUrl,
     credentials: overrides.credentials ?? defaultCredentials,
     sdk: overrides.sdk ?? defaultSdk,
     actions: {
