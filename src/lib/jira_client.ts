@@ -250,15 +250,47 @@ export class JiraClient {
     );
   }
 
-  /** JQL search. `/rest/api/3/search`. */
+  /**
+   * JQL search. Uses `/rest/api/3/search/jql` (Cloud) — the legacy
+   * `/rest/api/3/search` endpoint was decommissioned in 2025 and now returns
+   * HTTP 410. The new endpoint paginates with an opaque `nextPageToken` and
+   * does NOT return `total`; we synthesize a `total` from the issues length
+   * for backward-compatible callers, and treat the absence of `nextPageToken`
+   * as "no more pages".
+   */
   public async searchJql(
     jql: string,
     maxResults: number,
     startAt = 0,
   ): Promise<JiraResult<JiraSearchResponse>> {
-    return this.request<JiraSearchResponse>("GET", "/rest/api/3/search", {
-      query: { jql, maxResults, startAt, fields: "summary,status,assignee,labels,updated" },
-    });
+    type NewSearchResponse = {
+      issues?: JiraIssue[];
+      nextPageToken?: string;
+      isLast?: boolean;
+    };
+    const result = await this.request<NewSearchResponse>(
+      "GET",
+      "/rest/api/3/search/jql",
+      {
+        query: {
+          jql,
+          maxResults,
+          fields: "summary,status,assignee,labels,updated",
+        },
+      },
+    );
+    if (!result.ok) return result;
+    const issues = result.data.issues ?? [];
+    return {
+      ok: true,
+      status: result.status,
+      data: {
+        issues,
+        total: issues.length,
+        maxResults,
+        startAt,
+      },
+    };
   }
 
   /** `/rest/api/3/issue/{issueKey}`. */

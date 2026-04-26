@@ -166,7 +166,7 @@ describe("JiraClient", () => {
     const res = await client.searchJql("project = WIKI", 25, 0);
     expect(res.ok).toBe(true);
     expect(calls[0]?.url).toMatch(
-      /https:\/\/example\.atlassian\.net\/rest\/api\/3\/search\?jql=project/,
+      /https:\/\/example\.atlassian\.net\/rest\/api\/3\/search\/jql\?jql=project/,
     );
     expect(calls[0]?.headers.get("authorization")).toMatch(/^Basic /);
   });
@@ -405,7 +405,9 @@ describe("jira connector — fetch()", () => {
     });
     expect(r.status).toBe("success");
     if (r.status === "success") {
-      expect(r.data["total"]).toBe(2);
+      // The new /rest/api/3/search/jql endpoint doesn't return a total —
+      // we synthesize it from issues.length, so it tracks the array.
+      expect(r.data["total"]).toBe(1);
       const first = (r.data["issues"] as Array<Record<string, unknown>>)[0];
       expect(first?.["key"]).toBe("FOO-1");
       expect(first?.["assignee"]).toBe("Jane");
