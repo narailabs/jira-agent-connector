@@ -1,6 +1,6 @@
 {
   "name": "@narai/jira-agent-connector",
-  "version": "3.2.0",
+  "version": "3.2.1",
   "description": "Read-only Jira connector: JQL search, issue details, project metadata. Built on @narai/connector-toolkit with an approval gate and hardship logging. JSON-envelope CLI + library API.",
   "type": "module",
   "main": "./dist/index.js",
